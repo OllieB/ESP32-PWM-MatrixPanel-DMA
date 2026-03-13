@@ -5,7 +5,7 @@
  * @brief       ESP32-S3 implementation for a MBI5135 PWM chip based LED Matrix Panel
  ******************************************************************************************/
 
-
+#include <Arduino.h>
 #include <Matrix.h>
 #include <array>
 
@@ -37,83 +37,79 @@ void hsvToRgb(float h, float s, float v, uint16_t &ret_r, uint16_t &ret_g, uint1
 // Start the App
 void setup(void) 
 {
+    Serial.begin(115200);
 
-  Serial.begin(115200);
-  delay(100);
-  Serial.println("Starting....");
-  Serial.print("setup() running on core ");
-  Serial.println(xPortGetCoreID());
-  esp_task_wdt_deinit();
+    pinMode(MBI_SRCLK, OUTPUT);
+    digitalWrite(MBI_SRCLK, HIGH); // Disable display output during setup
 
-  matrix.initMatrix();
+    //esp_log_level_set("*", ESP_LOG_VERBOSE); // Set all components to debug level
+    Serial.println("Starting....");
+    Serial.print("setup() running on core ");
+    Serial.println(xPortGetCoreID());
+    esp_task_wdt_deinit();
 
-  delay(10);
-
-  matrix.drawLine   (2,2,PANEL_PHY_RES_X-3,PANEL_PHY_RES_Y-3, CRGB(255,255,255)); // this doesn't work??
-
-  matrix.fillCircle (PANEL_PHY_RES_X/2,PANEL_PHY_RES_Y/2,16,   CRGB(254,254,254));
-
-  matrix.update();  
-
-  delay(10000);
-
-
-
-}
-
-float angle = 0.0f;
-uint16_t r,g,b;
-int frame_count = 0;
-
-void loop() 
-{
-  static unsigned long lastTime = 0;
-  unsigned long currentTime = millis();
-
-  frame_count++;
-
-  uint16_t cr, cg, cb;
-
- // if ( frame_count < 5) {
-
-    for (int y = 0; y < PANEL_MBI_RES_Y; y++) {
-              for (int x = 0; x < PANEL_MBI_RES_X; x++) {
-                  float dx = x - PANEL_MBI_RES_X / 2;
-                  float dy = y - PANEL_MBI_RES_Y / 2;
-                  float distance = sqrt(dx * dx + dy * dy);
-                  float theta = atan2(dy, dx) + angle;
-                  float hue = fmod((theta / (2 * PI)) + 1.0f, 1.0f);
-                  hsvToRgb(hue, 1.0f, 1.0f,r,g,b);
-                //  r = 255;
-               //   b = 255;
-               //   g = 255;
-                  matrix.drawPixel(x, y, r,g,b);
-
-                  if (y==46 & x == 39)
-                  {
-                    cr = r; cb = b; cg = g;
-                  }
-
-              }
-    }
-
-
-    matrix.fillCircle(40, 40, 5, CRGB(cr, cg, cb));   
-
-    if ((currentTime - lastTime) > 1000)
-    {
-    //  Serial.print("FPS: ");
-    //  Serial.println(frame_count, DEC);
-      
-    // frame_count = 0;
-    //  lastTime = currentTime;
-
-    }   
+    matrix.initMatrix();
+    //matrix.setRotation(1);  // 0=0°, 1=90°, 2=180°, 3=270°
 
     matrix.update();
-    angle += 0.01f;
+    delay(10);
+    digitalWrite(MBI_SRCLK, LOW); // Enable display output
+}
 
+void loop() {
 
- // }
+    static uint16_t r,g,b = 0;
+    static float angle = 0.0f;
 
+    unsigned long t0 = micros();
+    
+    
+    // Rainbow pinwheel
+    for (int y = 0; y < PANEL_PHY_RES_Y; y++) {
+        for (int x = 0; x < PANEL_PHY_RES_X; x++) {
+            float dx = x - PANEL_PHY_RES_X / 2;
+            float dy = y - PANEL_PHY_RES_Y / 2;
+            float distance = sqrt(dx * dx + dy * dy);
+            float theta = atan2(dy, dx) + angle;
+            float hue = fmod((theta / (2 * PI)) + 1.0f, 1.0f);
+            hsvToRgb(hue, 1.0f, 1.0f,r,g,b);
+            
+            matrix.drawPixel(x, y, r,g,b);
+        }
+    }
+    
+    angle += 0.1f;
+    
+    static unsigned long lastFrameTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Target frame time for 24 FPS (41.67ms per frame)
+    const unsigned long targetFrameTime = 42;
+    unsigned long deltaTime = currentTime - lastFrameTime;
+    
+    // Only process frame if enough time has passed
+    if (deltaTime < targetFrameTime) {
+        Serial.printf("Frame time %lu ms, sleeping for %lu ms\n", deltaTime, targetFrameTime - deltaTime);
+        delay(targetFrameTime - deltaTime);
+    }
+
+    lastFrameTime = millis();
+
+    static unsigned long lastFPSPrintTime = 0;
+    static int frame_count = 0;
+
+    unsigned long t1 = micros();
+    matrix.update();
+    unsigned long t2 = micros();
+
+    if ((currentTime - lastFPSPrintTime) > 1000) {
+        Serial.print("FPS: ");
+        Serial.println(frame_count, DEC);
+        Serial.printf("draw=%lu µs, update=%lu µs\n", t1-t0, t2-t1);
+
+        frame_count = 0;
+        lastFPSPrintTime = currentTime;
+    }
+
+    frame_count++;
 }

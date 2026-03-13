@@ -112,6 +112,10 @@ class Matrix : public GFX {
     // Fill with zeros to start with
     memset(dma_grey_gpio_data, 0, dma_grey_buffer_size);
 
+    // Setup SPI DMA Output for GCLK and Address Lines FIRST
+    // (Must initialize before LCD DMA to avoid SPI2 resource conflict)
+    spi_setup();
+
     // Setup LCD DMA and Output to GPIO
     auto bus_cfg = dma_bus.config();
     bus_cfg.pin_wr = MBI_DCLK;  // DCLK Pin
@@ -136,15 +140,10 @@ class Matrix : public GFX {
     dma_bus.config(bus_cfg);
     dma_bus.setup_lcd_dma_periph();
 
-    // Setup SPI DMA Output for GCLK and Address Lines
-    spi_setup();
-
     updateRegisters();
 
-    update();
-
     initialized = true;    
- 
+    update();
   }
 
   void refreshMatrixConfig() {
@@ -300,39 +299,6 @@ class Matrix : public GFX {
 
       // Send the greyscale data buffer via DMA
       dma_bus.send_stuff_once(dma_grey_gpio_data, dma_grey_buffer_size, true);
-  }
-
-
-  void mbi_update_frame_old(bool configure_latches) {
-
-      int counter = 0;
-      for (int row = 0; row < PANEL_SCAN_LINES; row++) {
-        for (int chan = 0; chan < PANEL_MBI_LED_CHANS; chan++) {
-          for (int ic = 0; ic < PANEL_MBI_CHAIN_LEN; ic++) {  // number of chained ICs
-
-            // data latch on the last bit, when sending the last byte set latch=1
-            int latch = 0;
-            if (ic == 4) {
-              latch = 1;
-            }  // latch on last channel / ic
-
-            int bit_offset = 16;
-            while (bit_offset > 0)  // shift out MSB first per the documentation.
-            {
-              bit_offset--;  // start from 15
-
-              if (latch == 1 && bit_offset == 0) {
-                dma_grey_gpio_data[counter] |= BIT_LAT;
-              }
-              counter++;
-            }
-          }
-        }
-      }
-   
-    //log_d(TAG, "Sending greyscale data buffer out via LCD DMA.");
-    dma_bus.send_stuff_once(dma_grey_gpio_data, dma_grey_buffer_size, true);  // sending payload hence TRUE
-
   }  // mbi_update_frame
 
 
@@ -348,6 +314,25 @@ class Matrix : public GFX {
     The 16384 GCLKs (14-bit) PWM cycle of MBI5052/53 is divided into 32 sections, each section has 512 GCLKs.
   */
   void mbi_set_pixel(uint8_t x, uint8_t y, uint8_t _r_data, uint8_t _g_data, uint8_t _b_data) {
+    
+    // Apply rotation transformation
+    int16_t tx = x, ty = y;
+    switch (getRotation()) {
+      case 1:
+        tx = PANEL_PHY_RES_Y - 1 - y;
+        ty = x;
+        break;
+      case 2:
+        tx = PANEL_PHY_RES_X - 1 - x;
+        ty = PANEL_PHY_RES_Y - 1 - y;
+        break;
+      case 3:
+        tx = y;
+        ty = PANEL_PHY_RES_X - 1 - x;
+        break;
+    }
+    x = tx;
+    y = ty;
     
     if (x >= PANEL_PHY_RES_X || y >= PANEL_PHY_RES_Y) {
       return;
@@ -547,7 +532,7 @@ class Matrix : public GFX {
     int line_num = PANEL_SCAN_LINES - 1;
     int gray_scale = gray_scale_14;
     int gclk_multiplier = gclk_multiplier_OFF;
-    int current = current_1;  // change as required by channel
+    int current = current_2;  // change as required by channel
 
     // Documentation says set bits E and F of Config1 Reg to 1
     config_reg1_val = (config_reg1_val | (ghost_elimination << 14) | (line_num << 8) | (gray_scale << 7) | (gclk_multiplier << 6) | (current));

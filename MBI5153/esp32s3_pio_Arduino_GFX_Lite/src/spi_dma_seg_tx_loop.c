@@ -95,6 +95,10 @@ static const char* const SPI_TAG = "spi_master_custom";
 typedef struct spi_device_t spi_device_t;
 static spi_device_handle_t spi_device;
 
+// Store GDMA channel information for low-level operations
+static gdma_channel_handle_t spi_tx_dma_chan_handle = NULL;
+static int spi_tx_dma_chan_id = -1;  // Extracted channel ID for low-level GDMA operations
+
 /**************************************************************************************/
 /* from spi_master.c; Apache 2.0 */
 #define spi_dma_ll_tx_reset(dev, chan)  gdma_ll_tx_reset_channel(&GDMA, chan);
@@ -215,10 +219,13 @@ esp_err_t spi_setup(void)
   
   spi_bus_config_t host_conf;
 
-  // ensure GND is connected on the logic analyser when testing!
-  host_conf.data0_io_num = -1;
-  host_conf.data1_io_num = -1;
-  host_conf.sclk_io_num  = -1; // clock not used  (therefore don't have SPICOMMON_BUSFLAG_SCLK below )
+  // IDF 5.3 FIX: OCTAL = QUAD + IO4_IO7 = (DUAL + WPHD) + IO4_IO7
+  // DUAL requires both MOSI and MISO to be output-capable GPIOs
+  // Set to unused GPIO pins (8, 9) just to satisfy driver validation
+  // These won't actually be used but allow DUAL flag to be set
+  host_conf.data0_io_num = GPIO_NUM_8;   // MOSI - unused GPIO for validation
+  host_conf.data1_io_num = GPIO_NUM_9;   // MISO - unused GPIO for validation
+  host_conf.sclk_io_num  = -1; // clock not used
 
   host_conf.data2_io_num = ADDR_A_PIN;
   host_conf.data3_io_num = ADDR_B_PIN; 
@@ -233,7 +240,7 @@ esp_err_t spi_setup(void)
   host_conf.max_transfer_sz = 32768; //32768 is the max for S3
   host_conf.flags = SPICOMMON_BUSFLAG_OCTAL | SPICOMMON_BUSFLAG_GPIO_PINS | SPICOMMON_BUSFLAG_MASTER;
   host_conf.intr_flags = ESP_INTR_FLAG_SHARED;
-  host_conf.isr_cpu_id = INTR_CPU_ID_AUTO;
+  host_conf.isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO;
 
   CHECK_CALLE(spi_bus_initialize(SPI2_HOST, &host_conf, SPI_DMA_CH_AUTO), "Could not initialize SPI bus");
 
@@ -249,7 +256,7 @@ esp_err_t spi_setup(void)
   // Set the GCLK Frequency
   // Note: The frequency of GCLK must be higher than 20% of DCLK to get the correct gray scale data.  
   //device_conf.clock_speed_hz  = SPI_MASTER_FREQ_8M/2; // 4Mhz
-  device_conf.clock_speed_hz  = 5 * 1000 * 1000; // 3Mhz
+  device_conf.clock_speed_hz  = 5 * 1000 * 1000; // 5Mhz
   
   device_conf.duty_cycle_pos  = 0;
   device_conf.cs_ena_pretrans = device_conf.cs_ena_posttrans = 0;
@@ -372,14 +379,39 @@ esp_err_t spi_transfer_loop_start()
 
   GPSPI2.slave.dma_seg_magic_value = 0xA;
 
-  const spi_bus_attr_t* bus_attr = spi_bus_get_attr(SPI2_HOST); 
+  // Extract GDMA channel information from SPI bus attributes
+  // In IDF 5.3+, tx_dma_chan is a gdma_channel_handle_t
+  if (spi_tx_dma_chan_id == -1) {
+    const spi_bus_attr_t* bus_attr = spi_bus_get_attr(SPI2_HOST);
+    if (bus_attr) {
+      // Try to get DMA channel from bus attributes - in IDF 5.3 it may be in dma_ctx
+      const spi_dma_ctx_t* dma_ctx = spi_bus_get_dma_ctx(SPI2_HOST);
+      if (dma_ctx && dma_ctx->tx_dma_chan) {
+        spi_tx_dma_chan_handle = dma_ctx->tx_dma_chan;
+        // Extract the channel ID from the handle using the proper API
+        esp_err_t ret = gdma_get_channel_id(spi_tx_dma_chan_handle, &spi_tx_dma_chan_id);
+        if (ret == ESP_OK) {
+          ESP_LOGI(TAG, "Extracted DMA Channel ID: %d", spi_tx_dma_chan_id);
+        } else {
+          ESP_LOGE(TAG, "Failed to extract DMA Channel ID, error: %d", ret);
+          return ESP_FAIL;
+        }
+      } else {
+        ESP_LOGE(TAG, "Failed to get DMA context or TX DMA channel");
+        return ESP_FAIL;
+      }
+    } else {
+      ESP_LOGE(TAG, "Failed to get bus attributes");
+      return ESP_FAIL;
+    }
+  }
 
   // hal->dmadesc_tx = &dma_data_lldesc[0]; // START OFF A DESCRIPTOR 0
-  spi_dma_ll_tx_reset(&GDMA, bus_attr->tx_dma_chan);
+  spi_dma_ll_tx_reset(&GDMA, spi_tx_dma_chan_id);
   spi_ll_dma_tx_fifo_reset(&GPSPI2);
   spi_ll_outfifo_empty_clr(&GPSPI2);
   spi_ll_dma_tx_enable(&GPSPI2, 1);
-  spi_dma_ll_tx_start(&GDMA, bus_attr->tx_dma_chan, &dma_data_lldesc[0]);  
+  spi_dma_ll_tx_start(&GDMA, spi_tx_dma_chan_id, &dma_data_lldesc[0]);  
 
   GPSPI2.slave.usr_conf = 1;  // Enable user conf for segmented transfers
 
@@ -447,13 +479,13 @@ esp_err_t spi_dma_transfer_loop_unpause(void) {
 
   const spi_bus_attr_t* bus_attr = spi_bus_get_attr(SPI2_HOST); 
 
-  //ESP_LOGD(TAG, "Allocated DMA Channel is %d", bus_attr->tx_dma_chan);
+  //ESP_LOGD(TAG, "Allocated DMA Channel is %d", spi_tx_dma_chan_id);
 
   dma_data_lldesc[dma_lldesc_required-1].eof = 0;
   dma_data_lldesc[dma_lldesc_required-1].qe.stqe_next = &dma_data_lldesc[0];  
 
   // Continue sending shit to the SPI peripheral like nothing happened.
-  gdma_ll_tx_start(&GDMA, bus_attr->tx_dma_chan);
+  gdma_ll_tx_start(&GDMA, spi_tx_dma_chan_id);
 
   return ESP_OK;
 

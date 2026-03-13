@@ -66,7 +66,8 @@ static void IRAM_ATTR lcd_isr(void* arg) {
   
   // at this point, the previously active buffer is free, go ahead and write to it
   buffer_sent = true;
-  trans_done_count++;
+  int temp = trans_done_count + 1;
+  trans_done_count = temp;
 
 }
 
@@ -121,12 +122,12 @@ esp_err_t Bus_Parallel16::setup_lcd_dma_periph(void) {
   //LCD_CAM.lcd_clock.lcd_clk_equ_sysclk = 0; // PCLK = CLK / (CLKCNT_N+1)
   LCD_CAM.lcd_clock.lcd_clk_equ_sysclk = 1;  // PCLK = CLK / 1 (... so 160Mhz still)
 
-  LCD_CAM.lcd_clock.lcd_clkm_div_num = 23;  // 7mhz  // Anything > 8Mhz seems to introduce noise when using jumper
+  LCD_CAM.lcd_clock.lcd_clkm_div_num = 10;  // 7mhz  // Anything > 8Mhz seems to introduce noise when using jumper
 
   LCD_CAM.lcd_clock.lcd_clkm_div_b = 0;  // fractal clock divider numerator
   LCD_CAM.lcd_clock.lcd_clkm_div_a = 1;  // denominator
 
-  ESP_LOGD("S3", "Clock divider is %d", (int)LCD_CAM.lcd_clock.lcd_clkm_div_num);
+  ESP_LOGD(TAG, "Clock divider is %d", (int)LCD_CAM.lcd_clock.lcd_clkm_div_num);
   ESP_LOGI(TAG, "Resulting LCD clock frequency: %d Hz", (int)(160000000L / LCD_CAM.lcd_clock.lcd_clkm_div_num));
 
   LCD_CAM.lcd_ctrl.lcd_rgb_mode_en = 0;     // i8080 mode (not RGB)
@@ -160,14 +161,14 @@ esp_err_t Bus_Parallel16::setup_lcd_dma_periph(void) {
   for (int i = 0; i < 16; i++) {
     if (pins[i] >= 0) {  // -1 value will CRASH the ESP32!
       esp_rom_gpio_connect_out_signal(pins[i], LCD_DATA_OUT0_IDX + i, false, false);
-      gpio_hal_iomux_func_sel(GPIO_PIN_MUX_REG[pins[i]], PIN_FUNC_GPIO);
+      gpio_ll_func_sel(&GPIO, pins[i], PIN_FUNC_GPIO);
       gpio_set_drive_capability((gpio_num_t)pins[i], (gpio_drive_cap_t)3);
     }
   }
 
   // Clock
   esp_rom_gpio_connect_out_signal(_cfg.pin_wr, LCD_PCLK_IDX, _cfg.invert_pclk, false);
-  gpio_hal_iomux_func_sel(GPIO_PIN_MUX_REG[_cfg.pin_wr], PIN_FUNC_GPIO);
+  gpio_ll_func_sel(&GPIO, _cfg.pin_wr, PIN_FUNC_GPIO);
   gpio_set_drive_capability((gpio_num_t)_cfg.pin_wr, (gpio_drive_cap_t)3);
 
   // Remaining descriptor elements are initialized before each DMA transfer.
@@ -178,7 +179,7 @@ esp_err_t Bus_Parallel16::setup_lcd_dma_periph(void) {
     .flags = {
       .reserve_sibling = 0 }
   };
-  gdma_new_channel(&dma_chan_config, &dma_chan);
+  gdma_new_ahb_channel(&dma_chan_config, &dma_chan);  // IDF 5.5: use gdma_new_ahb_channel
   gdma_connect(dma_chan, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_LCD, 0));
   static gdma_strategy_config_t strategy_config = {
     .owner_check = false,
@@ -186,11 +187,12 @@ esp_err_t Bus_Parallel16::setup_lcd_dma_periph(void) {
   };
   gdma_apply_strategy(dma_chan, &strategy_config);
 
-  gdma_transfer_ability_t ability = {
-    .sram_trans_align = 32,
-    .psram_trans_align = 64,
+  // IDF 5.5: Use gdma_config_transfer instead of gdma_set_transfer_ability
+  gdma_transfer_config_t transfer_config = {
+    .max_data_burst_size = 16,
+    .access_ext_mem = true
   };
-  gdma_set_transfer_ability(dma_chan, &ability);
+  gdma_config_transfer(dma_chan, &transfer_config);
 
 
 // Disable DMA transfer callback as it's pointless, there's about 3 caches between the DMA perph
