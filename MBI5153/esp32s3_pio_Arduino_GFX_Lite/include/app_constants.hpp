@@ -161,7 +161,10 @@
 
 #define gclk_multiplier_ON  1  // GCLK Multipler On - You MUST use exactly 257 clocks for each rowscan!
 #define gclk_multiplier_OFF 0  // GCLK Multipler On - You MUST use exactly 513 clocks for each rowscan!
-#define current_1 2           // LED current - MINIMUM
-#define current_2 5           // LED current - MEDIUM LOW
-#define current_3 35           // LED current - MEDIUM HIGH
-#define current_4 63           // LED current - MAXIMUM
+
+#define current_1 2           // LED current - MINIMUM (1.4~) (This is )
+#define current_2 5           // LED current - MEDIUM LOW (~1.75A)
+#define current_3 10           // LED current - MEDIUM (~2A)
+#define current_4 20           // LED current - MEDIUM HIGH (~3A)
+#define current_5 35           // LED current - HIGH (~5A)
+#define current_6 63           // LED current - MAXIMUM (~12A) (Panel will get very hot at this setting, use with caution!)

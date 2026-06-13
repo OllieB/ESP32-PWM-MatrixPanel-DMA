@@ -532,7 +532,7 @@ class Matrix : public GFX {
     int line_num = PANEL_SCAN_LINES - 1;
     int gray_scale = gray_scale_14;
     int gclk_multiplier = gclk_multiplier_OFF;
-    int current = current_2;  // change as required by channel
+    int current = current_3;  // change as required by channel
 
     // Documentation says set bits E and F of Config1 Reg to 1
     config_reg1_val = (config_reg1_val | (ghost_elimination << 14) | (line_num << 8) | (gray_scale << 7) | (gclk_multiplier << 6) | (current));
