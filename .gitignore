@@ -1,1 +1,6 @@
-MBI5153/esp32s3_pio_Arduino_GFX_Lite/debug.log
+.pio
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.venv
+
