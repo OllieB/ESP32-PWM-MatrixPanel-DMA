@@ -266,9 +266,10 @@ esp_err_t spi_setup(void)
   device_conf.clock_source    = SPI_CLK_SRC_DEFAULT;
 
   // Set the GCLK Frequency
-  // Note: The frequency of GCLK must be higher than 20% of DCLK to get the correct gray scale data.  
-  //device_conf.clock_speed_hz  = SPI_MASTER_FREQ_8M/2; // 4Mhz
-  device_conf.clock_speed_hz  = 5 * 1000 * 1000; // 5Mhz
+  // Note: The frequency of GCLK must be higher than 20% of DCLK to get the correct gray scale data.
+  // Kept in lockstep with LCD_CAM.lcd_clock.lcd_clkm_div_num in lcd_dma_parallel16.cpp - doubling one
+  // without the other changes the GCLK/DCLK ratio and risks greyscale corruption.
+  device_conf.clock_speed_hz  = 10 * 1000 * 1000; // 10Mhz
   
   device_conf.duty_cycle_pos  = 0;
   device_conf.cs_ena_pretrans = device_conf.cs_ena_posttrans = 0;

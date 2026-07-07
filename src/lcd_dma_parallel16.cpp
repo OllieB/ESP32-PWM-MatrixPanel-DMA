@@ -84,10 +84,7 @@ esp_err_t Bus_Parallel16::setup_lcd_dma_periph(void) {
 
   // MBI5153 app note, Section 2 point 5: "The frequency of GCLK must be higher than 20% of DCLK to
   // get the correct gray scale data" - the chip commits shifted-in greyscale data to SRAM using GCLK.
-  // GCLK here is ~1.67MHz (5MHz SPI, one pulse per 3 bytes), so DCLK must stay below ~8.3MHz.
-  // div 10 (16MHz DCLK) violated this at a 10.4% ratio and caused sporadic greyscale corruption
-  // (faintly-lit wrong pixels near lit ones). div 24 = 6.67MHz DCLK = 25% ratio, compliant with margin.
-  LCD_CAM.lcd_clock.lcd_clkm_div_num = 24;  // 6.67MHz  // Anything > 8Mhz seems to introduce noise when using jumper
+  LCD_CAM.lcd_clock.lcd_clkm_div_num = 12;  // 13.33MHz
   
   LCD_CAM.lcd_clock.lcd_clkm_div_b = 0;  // fractal clock divider numerator
   LCD_CAM.lcd_clock.lcd_clkm_div_a = 1;  // denominator
