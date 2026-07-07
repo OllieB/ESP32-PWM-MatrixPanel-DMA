@@ -4,6 +4,7 @@
 #include <string.h>
 
 static const char *TAG = "Matrix.h";
+static ESP32_GREY_DMA_STORAGE_TYPE g_cmd_dma_buf[700];
 
 // CIE - Lookup table for converting between perceived LED brightness and PWM
 // https://gist.github.com/mathiasvr/19ce1d7b6caeab230934080ae1f1380e
@@ -96,7 +97,9 @@ void Matrix::update() {
   mbi_v_sync_dma();
   spi_transfer_loop_start();
 
-  memset(dma_grey_gpio_data, 0, dma_grey_buffer_size);
+  if (!imagePersistenceEnabled) {
+    memset(dma_grey_gpio_data, 0, dma_grey_buffer_size);
+  }
 }
 
 void Matrix::updateRegisters() {
@@ -128,17 +131,25 @@ void Matrix::setBrightness(uint8_t newBrightness) {
   if (initialized) {
     mbi_pre_active_dma();
     mbi_send_config_reg1_dma();
-
-    // mbi_pre_active_dma()/mbi_send_config_reg1_dma() leave stray BIT_LAT bits at the
-    // start of dma_grey_gpio_data. mbi_set_pixel() never clears BIT_LAT (only the RGB
-    // bits), so those leftover latch bits would otherwise get shipped out as part of
-    // the next greyscale frame and cause a spurious mid-shift latch.
-    memset(dma_grey_gpio_data, 0, dma_grey_buffer_size);
   }
 }
 
 uint8_t Matrix::getBrightness() const {
   return currentLevel;
+}
+
+void Matrix::setImagePersistence(bool enabled) {
+  imagePersistenceEnabled = enabled;
+}
+
+bool Matrix::getImagePersistence() const {
+  return imagePersistenceEnabled;
+}
+
+void Matrix::clearFrameBuffer() {
+  if (dma_grey_gpio_data != nullptr && dma_grey_buffer_size > 0) {
+    memset(dma_grey_gpio_data, 0, dma_grey_buffer_size);
+  }
 }
 
 uint8_t Matrix::getXResolution() {
@@ -291,17 +302,17 @@ void Matrix::mbi_pre_active_dma() {
 
   int payload_length = 0;
   for (int i = 0; i < 14; i++) {
-    dma_grey_gpio_data[payload_length] = BIT_LAT;
+    g_cmd_dma_buf[payload_length] = BIT_LAT;
     payload_length++;
   }
 
   // LE/LAT should be low for any rising edge of DCLK.
   for (int i = 0; i < 2; i++) {
-    dma_grey_gpio_data[payload_length] = 0x00;
+    g_cmd_dma_buf[payload_length] = 0x00;
     payload_length++;
   }
 
-  dma_bus.send_stuff_once(dma_grey_gpio_data, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
+  dma_bus.send_stuff_once(g_cmd_dma_buf, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
 }
 
 void Matrix::mbi_v_sync_dma() {
@@ -309,16 +320,16 @@ void Matrix::mbi_v_sync_dma() {
 
   // Send the Vsync somewhere in the middle of the gclk data.
   int payload_length = 600;
-  memset(dma_grey_gpio_data, 0, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE));
+  memset(g_cmd_dma_buf, 0, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE));
 
   int start_pos = payload_length - (payload_length / 2);
   for (int i = 0; i < 3; i++) {
-    dma_grey_gpio_data[start_pos++] = BIT_LAT;
+    g_cmd_dma_buf[start_pos++] = BIT_LAT;
   }
 
-  dma_grey_gpio_data[start_pos++] = 0x00;
+  g_cmd_dma_buf[start_pos++] = 0x00;
 
-  dma_bus.send_stuff_once(dma_grey_gpio_data, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
+  dma_bus.send_stuff_once(g_cmd_dma_buf, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
 }
 
 void Matrix::mbi_soft_reset_dma() {
@@ -327,17 +338,18 @@ void Matrix::mbi_soft_reset_dma() {
 
   int payload_length = 0;
   for (int i = 0; i < 10; i++) {
-    dma_grey_gpio_data[payload_length] = BIT_LAT;
+    g_cmd_dma_buf[payload_length] = BIT_LAT;
     payload_length++;
   }
 
-  dma_grey_gpio_data[payload_length] = 0x00;
+  g_cmd_dma_buf[payload_length] = 0x00;
   payload_length++;
 
-  dma_bus.send_stuff_once(dma_grey_gpio_data, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
+  dma_bus.send_stuff_once(g_cmd_dma_buf, payload_length * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
 }
 
-void Matrix::mbi_set_config_dma(unsigned int &dma_output_pos,
+void Matrix::mbi_set_config_dma(ESP32_GREY_DMA_STORAGE_TYPE *out_buf,
+                                unsigned int &dma_output_pos,
                                 uint16_t config_reg_r,
                                 uint16_t config_reg_gb,
                                 bool latch,
@@ -365,7 +377,7 @@ void Matrix::mbi_set_config_dma(unsigned int &dma_output_pos,
       mbi_rgb_sdi_val |= BIT_LAT;
     }
 
-    dma_grey_gpio_data[dma_output_pos++] = mbi_rgb_sdi_val;
+    out_buf[dma_output_pos++] = mbi_rgb_sdi_val;
   }
 }
 
@@ -385,10 +397,10 @@ void Matrix::mbi_send_config_reg1_dma() {
 
   unsigned int dma_output_pos = 0;
   for (int i = 0; i < PANEL_MBI_CHAIN_LEN; i++) {
-    mbi_set_config_dma(dma_output_pos, config_reg1_val, config_reg1_val, (i == (PANEL_MBI_CHAIN_LEN - 1)), false);
+    mbi_set_config_dma(g_cmd_dma_buf, dma_output_pos, config_reg1_val, config_reg1_val, (i == (PANEL_MBI_CHAIN_LEN - 1)), false);
   }
 
-  dma_bus.send_stuff_once(dma_grey_gpio_data, dma_output_pos * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
+  dma_bus.send_stuff_once(g_cmd_dma_buf, dma_output_pos * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
 }
 
 void Matrix::mbi_send_config_reg2_dma() {
@@ -399,8 +411,8 @@ void Matrix::mbi_send_config_reg2_dma() {
   unsigned int dma_output_pos = 0;
 
   for (int i = 0; i < PANEL_MBI_CHAIN_LEN; i++) {
-    mbi_set_config_dma(dma_output_pos, config_reg2_val_r, config_reg2_val_gb, (i == (PANEL_MBI_CHAIN_LEN - 1)), true);
+    mbi_set_config_dma(g_cmd_dma_buf, dma_output_pos, config_reg2_val_r, config_reg2_val_gb, (i == (PANEL_MBI_CHAIN_LEN - 1)), true);
   }
 
-  dma_bus.send_stuff_once(dma_grey_gpio_data, dma_output_pos * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
+  dma_bus.send_stuff_once(g_cmd_dma_buf, dma_output_pos * sizeof(ESP32_GREY_DMA_STORAGE_TYPE), false);
 }

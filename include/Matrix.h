@@ -36,6 +36,13 @@ class Matrix : public GFX {
   void setBrightness(uint8_t newBrightness);
   uint8_t getBrightness() const;
 
+  // When enabled, update() keeps previous pixel data instead of clearing after each frame.
+  void setImagePersistence(bool enabled);
+  bool getImagePersistence() const;
+
+  // Explicitly clear the internal frame buffer.
+  void clearFrameBuffer();
+
   uint8_t getXResolution();
   uint8_t getYResolution();
 
@@ -53,6 +60,7 @@ class Matrix : public GFX {
  protected:
   bool initialized = false;
   uint8_t currentLevel = BRIGHTNESS_MIN;  // LED drive current, see setBrightness()
+  bool imagePersistenceEnabled = false;
 
   // D<A Data to send.
   Bus_Parallel16 dma_bus;
@@ -70,7 +78,12 @@ class Matrix : public GFX {
   void mbi_pre_active_dma();
   void mbi_v_sync_dma();
   void mbi_soft_reset_dma();
-  void mbi_set_config_dma(unsigned int &dma_output_pos, uint16_t config_reg_r, uint16_t config_reg_gb, bool latch, bool reg2);
+  void mbi_set_config_dma(ESP32_GREY_DMA_STORAGE_TYPE *out_buf,
+                          unsigned int &dma_output_pos,
+                          uint16_t config_reg_r,
+                          uint16_t config_reg_gb,
+                          bool latch,
+                          bool reg2);
   void mbi_send_config_reg1_dma();
   void mbi_send_config_reg2_dma();
 };

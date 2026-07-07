@@ -48,6 +48,7 @@ void setup(void)
     matrix.initMatrix();
     matrix.setBrightness(BRIGHTNESS_LOW); // Set brightness level (0-63)
     matrix.setRotation(1);  // 0=0°, 1=90°, 2=180°, 3=270°
+    matrix.setImagePersistence(true); // Keep previous pixels across frames
 
     matrix.update();
     delay(10);
