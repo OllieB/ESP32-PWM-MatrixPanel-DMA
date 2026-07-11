@@ -73,9 +73,6 @@ static const char* const TAG = "gpspi2_spi_dma_seg_tx_loop";
 
 /**************************************************************************************/
 
-intr_handle_t intr_handle;
-static void default_isr_handler(void *args);
-
 DMA_ATTR volatile int  spi_seg_transfer_count = 0;
 DMA_ATTR volatile bool spi_seg_transfer_complete = false;
 
@@ -112,10 +109,14 @@ static int spi_tx_dma_chan_id = -1;  // Extracted channel ID for low-level GDMA 
 
 
 /**************************************************************************************/
-IRAM_ATTR static void default_isr_handler(void *args)
+// Polls (rather than interrupt-driven) because this IDF version's spi_bus_initialize()
+// hard-rejects ESP_INTR_FLAG_SHARED on bus_config->intr_flags, so the bus's own SPI2
+// interrupt is now exclusive - a second (our own) handler can no longer share that same
+// interrupt source (esp_intr_alloc_intrstatus returns ESP_ERR_NOT_FOUND). Since every use
+// of spi_seg_transfer_complete is itself a synchronous busy-wait anyway, there is no need
+// for an actual CPU interrupt: poll the raw hardware status bit directly instead.
+static inline void poll_spi_seg_status(void)
 {
-  spi_seg_transfer_count++;
-
   // trans_done fires at the end of EVERY segment of the free-running loop (every ~6.22ms);
   // dma_seg_trans_done fires only when the whole configurable-segmented transfer genuinely ends,
   // i.e. after the CONF word with SPI_USR_CONF_NXT cleared has been consumed and that final
@@ -125,15 +126,17 @@ IRAM_ATTR static void default_isr_handler(void *args)
   // while the next segment was already in flight, so spi_transfer_loop_start()'s DMA reset chopped
   // that segment mid-row - freezing one specific scan row's drive state for ~75us every frame,
   // which showed up as a fixed line of (red) ghosting on that row.
-  if (GPSPI2.dma_int_st.dma_seg_trans_done) {
-    spi_seg_transfer_complete = true;
+  if (GPSPI2.dma_int_raw.trans_done) {
+    spi_seg_transfer_count++;
+    spi_ll_clear_intr(&GPSPI2, SPI_LL_INTR_TRANS_DONE); // need this for the transacion to start
   }
 
-  spi_ll_clear_intr(&GPSPI2, SPI_LL_INTR_TRANS_DONE); // need this for the transacion to start
-  spi_ll_clear_intr(&GPSPI2, SPI_LL_INTR_SEG_DONE); // need this for the transacion to start
-
+  if (GPSPI2.dma_int_raw.dma_seg_trans_done) {
+    spi_seg_transfer_complete = true;
+    spi_ll_clear_intr(&GPSPI2, SPI_LL_INTR_SEG_DONE); // need this for the transacion to start
+  }
 }
- 
+
 int spi_get_transfer_count () {
   return spi_seg_transfer_count;
 }
@@ -229,7 +232,10 @@ esp_err_t spi_setup(void)
   // Initialize SPI host
   ESP_LOGD(TAG, "Initializing SPI bus");
   
-  spi_bus_config_t host_conf;
+  // Zero-initialized because the struct has grown fields across IDF versions (e.g.
+  // data_io_default_level) that this code never sets; left as stack garbage they could
+  // trip spi_bus_initialize()'s validation.
+  spi_bus_config_t host_conf = {};
 
   // IDF 5.3 FIX: OCTAL = QUAD + IO4_IO7 = (DUAL + WPHD) + IO4_IO7
   // DUAL requires both MOSI and MISO to be output-capable GPIOs
@@ -251,14 +257,19 @@ esp_err_t spi_setup(void)
   host_conf.data7_io_num = MBI_GCLK;
   host_conf.max_transfer_sz = 32768; //32768 is the max for S3
   host_conf.flags = SPICOMMON_BUSFLAG_OCTAL | SPICOMMON_BUSFLAG_GPIO_PINS | SPICOMMON_BUSFLAG_MASTER;
-  host_conf.intr_flags = ESP_INTR_FLAG_SHARED;
+  // This IDF version's spi_bus_initialize() now hard-rejects ESP_INTR_FLAG_SHARED (and
+  // HIGH/EDGE/INTRDISABLED) in bus_config->intr_flags with ESP_ERR_INVALID_ARG - previously
+  // this let the driver's own bus-level interrupt coexist as "shared" with the custom ISR we
+  // register on the same IRQ source (ETS_SPI2_INTR_SOURCE) in spi_transfer_loop_start(). Leave
+  // this at 0 now; the driver's own bus interrupt is no longer marked shareable here.
+  host_conf.intr_flags = 0;
   host_conf.isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO;
 
   CHECK_CALLE(spi_bus_initialize(SPI2_HOST, &host_conf, SPI_DMA_CH_AUTO), "Could not initialize SPI bus");
 
   // Initialize device
   ESP_LOGD(TAG, "Initializing SPI device");
-  spi_device_interface_config_t device_conf;
+  spi_device_interface_config_t device_conf = {};
   device_conf.command_bits  = 0;
   device_conf.address_bits  = 0;
   device_conf.dummy_bits    = 0;
@@ -382,8 +393,6 @@ esp_err_t spi_dma_seg_setup()
 
 esp_err_t spi_transfer_loop_start()
 {
-  esp_err_t ret;
-
   // Need to do first start first to set registers.
   ESP_LOGD(TAG, "Starting Output Loop");
 
@@ -436,10 +445,6 @@ esp_err_t spi_transfer_loop_start()
   GPSPI2.dma_int_clr.dma_seg_trans_done = 1; 
   GPSPI2.dma_int_clr.trans_done = 1; 
 
-  // Enable if not already enabled
-  GPSPI2.dma_int_ena.dma_seg_trans_done = 1;
-  GPSPI2.dma_int_ena.trans_done = 1; 
-
   // Further Reduce time between segment loops. These registers are not changed by CONF.
   GPSPI2.cmd.conf_bitlen = 0;         /*Define the APB cycles of  SPI_CONF state. Can be configured in CONF state.*/
   GPSPI2.user.cs_setup = 0;           /*(cycles+1) of prepare phase by spi clock this bits are combined with spi_cs_setup bit. Can be configured in CONF state.*/
@@ -447,14 +452,6 @@ esp_err_t spi_transfer_loop_start()
   GPSPI2.user1.cs_hold_time = 0;      /*delay cycles of cs pin by spi clock this bits are combined with spi_cs_hold bit. Can be configured in CONF state.*/
   GPSPI2.user1.usr_addr_bitlen = 0;   /*The length in bits of address phase. The register value shall be (bit_num-1). Can be configured in CONF state.*/
 
-
-  ret = esp_intr_free(intr_handle);
-
-  ret = esp_intr_alloc_intrstatus(ETS_SPI2_INTR_SOURCE, ESP_INTR_FLAG_SHARED, (uint32_t)&GPSPI2.dma_int_st.val, (SPI_DMA_SEG_TRANS_DONE_INT_ENA_M | SPI_SEG_MAGIC_ERR_INT_ENA_M | SPI_TRANS_DONE_INT_ENA_M), default_isr_handler,  NULL, &intr_handle); 
-  assert(ret == ESP_OK);
-
-  ret = esp_intr_enable(intr_handle);
-  assert(ret == ESP_OK);
 
   GPSPI2.cmd.update = 1;
   while (GPSPI2.cmd.update);    //waiting config applied
@@ -487,7 +484,9 @@ esp_err_t spi_transfer_loop_stop(void) {
   spi_seg_conf_1[1]  = spi_seg_conf_value_nxt_false; // If this bit is set, it means this configurable segmented transfer will continue its next
 
   // Wait until completion.
-  while (!spi_seg_transfer_complete);
+  while (!spi_seg_transfer_complete) {
+    poll_spi_seg_status();
+  }
 
   // The loop halts at the segment boundary (end of row 19's trailing padding) where the payload
   // holds GCLK HIGH, but the MBI5153 requires GCLK at low level for >300ns before it receives the
