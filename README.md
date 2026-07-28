@@ -10,7 +10,7 @@ More info on the panels here: https://led.limehouselabs.org/docs/tiles/dmg1083/
 
 ## Building
 
-This is a PlatformIO project. Open the repo root in PlatformIO (VS Code extension or CLI) and build/upload the `esp32-s3-n16r8` environment defined in [platformio.ini](platformio.ini).
+This is a pioarduino project. Open the repo root in pioarduino (VS Code extension or CLI) and build/upload the `esp32-s3-n16r8` environment defined in [platformio.ini](platformio.ini).
 
 This fork has been specifically created for a PCB that I have designed and I hope to it publish here.
 
